@@ -86,7 +86,8 @@ router.get("/users/search", (req: Request, res: Response) => {
   }
 
   const db = ensureDatabase();
-    const query = 'SELECT id, username, email, balance FROM users WHERE username = ?';
+  const query =
+    "SELECT id, username, email, balance FROM users WHERE username = ?";
 
   db.all(query, [username], (err, rows) => {
     db.close();
@@ -138,7 +139,13 @@ router.post("/transactions/transfer", (req: Request, res: Response) => {
       toUserId,
       amount: numericAmount,
     });
-  } catch (error) {}
+    console.info(
+      `[AUDITORIA] transferencia concluida de=${fromUserId} para=${toUserId} valor=${numericAmount}`,
+    );
+  } catch (error) {
+    console.error("[AUDITORIA] falha ao processar transferencia", error);
+    return res.status(500).json({ error: "erro interno" });
+  }
 });
 
 /**
