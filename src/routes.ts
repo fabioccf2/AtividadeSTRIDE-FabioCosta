@@ -86,12 +86,9 @@ router.get("/users/search", (req: Request, res: Response) => {
   }
 
   const db = ensureDatabase();
-  const query =
-    "SELECT id, username, email, balance FROM users WHERE username = '" +
-    username +
-    "'";
+    const query = 'SELECT id, username, email, balance FROM users WHERE username = ?';
 
-  db.all(query, (err, rows) => {
+  db.all(query, [username], (err, rows) => {
     db.close();
     if (err) {
       return res
