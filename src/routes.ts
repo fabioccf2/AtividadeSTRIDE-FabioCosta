@@ -1,7 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import sqlite3 from "sqlite3";
-import { exec } from "child_process";
 import path from "path";
 import fs from "fs";
 
@@ -38,9 +37,9 @@ function ensureDatabase(): sqlite3.Database {
 }
 
 /**
- * [S]poofing — POST /api/login
- * Chave secreta JWT hardcoded. Qualquer pessoa com acesso ao código
- * pode forjar tokens válidos.
+ * [S]poofing — POST /api/login — CORRIGIDO.
+ * O segredo do JWT vem de process.env.JWT_SECRET. Sem a variável
+ * configurada a API falha de forma segura, sem emitir token.
  */
 router.post("/login", (req: Request, res: Response) => {
   const { username, password } = req.body ?? {};
@@ -68,6 +67,7 @@ router.post("/login", (req: Request, res: Response) => {
   const token = jwt.sign({ username, role: "admin" }, secret, {
     expiresIn: "1h",
   });
+
   return res.status(200).json({
     message: "login realizado com sucesso",
     token,
@@ -75,8 +75,9 @@ router.post("/login", (req: Request, res: Response) => {
 });
 
 /**
- * [T]ampering — GET /api/users/search?username=
- * SQL Injection clássico via concatenação de strings na query.
+ * [T]ampering — GET /api/users/search?username= — CORRIGIDO.
+ * Prepared statement com placeholder (?): a entrada do usuário
+ * é tratada como dado, nunca como comando SQL.
  */
 router.get("/users/search", (req: Request, res: Response) => {
   const username = String(req.query.username ?? "");
@@ -101,9 +102,9 @@ router.get("/users/search", (req: Request, res: Response) => {
 });
 
 /**
- * [R]epudiation — POST /api/transactions/transfer
- * Operação crítica com catch vazio: erros são engolidos sem log,
- * impossibilitando auditoria/não-repúdio.
+ * [R]epudiation — POST /api/transactions/transfer — CORRIGIDO.
+ * A operação registra log de auditoria no sucesso e no erro,
+ * e sempre devolve resposta ao cliente.
  */
 router.post("/transactions/transfer", (req: Request, res: Response) => {
   const { fromUserId, toUserId, amount } = req.body ?? {};
@@ -133,15 +134,16 @@ router.post("/transactions/transfer", (req: Request, res: Response) => {
     ]);
     db.close();
 
+    console.info(
+      `[AUDITORIA] transferencia concluida de=${fromUserId} para=${toUserId} valor=${numericAmount}`,
+    );
+
     return res.status(200).json({
       message: "transferência concluída",
       fromUserId,
       toUserId,
       amount: numericAmount,
     });
-    console.info(
-      `[AUDITORIA] transferencia concluida de=${fromUserId} para=${toUserId} valor=${numericAmount}`,
-    );
   } catch (error) {
     console.error("[AUDITORIA] falha ao processar transferencia", error);
     return res.status(500).json({ error: "erro interno" });
@@ -149,9 +151,9 @@ router.post("/transactions/transfer", (req: Request, res: Response) => {
 });
 
 /**
- * [I]nformation Disclosure — GET /api/debug/crash
- * Força um erro que sobe até o middleware global, o qual
- * devolve error.stack completo na resposta.
+ * GET /api/debug/crash — rota mantida por contrato.
+ * O erro sobe ao middleware global de src/app.ts, que agora
+ * responde apenas { error: 'erro interno' }.
  */
 router.get(
   "/debug/crash",
@@ -161,8 +163,9 @@ router.get(
 );
 
 /**
- * [D]enial of Service — POST /api/validate/email
- * Regex vulnerável a ReDoS (backtracking catastrófico).
+ * [D]enial of Service — POST /api/validate/email — CORRIGIDO.
+ * Regex sem quantificadores aninhados e limite de tamanho na
+ * entrada: validação em tempo linear, sem backtracking explosivo.
  */
 router.post("/validate/email", (req: Request, res: Response) => {
   const { email } = req.body ?? {};
@@ -171,10 +174,10 @@ router.post("/validate/email", (req: Request, res: Response) => {
     return res.status(400).json({ error: "email é obrigatório" });
   }
 
-  // Regex ineficiente com quantificadores aninhados — vulnerável a ReDoS
-  const emailRegex = /^([a-zA-Z0-9]+)+@([a-zA-Z0-9]+)+\.([a-zA-Z]+)+$/;
+  const emailRegex =
+    /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}$/;
 
-  const isValid = emailRegex.test(email);
+  const isValid = email.length <= 254 && emailRegex.test(email);
 
   return res.status(200).json({
     email,
@@ -183,9 +186,9 @@ router.post("/validate/email", (req: Request, res: Response) => {
 });
 
 /**
- * [E]levation of Privilege — POST /api/reports/generate
- * Usa o campo `type` do body dentro de child_process.exec (RCE).
- * Correção esperada: whitelist de tipos + geração controlada, sem exec/eval.
+ * [E]levation of Privilege — POST /api/reports/generate — CORRIGIDO.
+ * Sem child_process/exec/eval. O tipo é validado contra uma
+ * whitelist e o relatório é gerado dentro da própria aplicação.
  */
 router.post("/reports/generate", (req: Request, res: Response) => {
   const { type } = req.body ?? {};
@@ -194,19 +197,15 @@ router.post("/reports/generate", (req: Request, res: Response) => {
     return res.status(400).json({ error: "type é obrigatório" });
   }
 
-  // Vulnerável de propósito: executa no shell com base no input do usuário
-  exec(`echo stride-ok-${type}`, (error, stdout, stderr) => {
-    if (error) {
-      return res.status(500).json({
-        error: "falha ao gerar relatório",
-        details: error.message,
-        stderr,
-      });
-    }
+  const RELATORIOS_PERMITIDOS: string[] = ["summary", "balance"];
+  const tipo = type.trim();
 
-    return res.status(200).json({
-      message: "relatório gerado",
-      output: stdout,
-    });
+  if (!RELATORIOS_PERMITIDOS.includes(tipo)) {
+    return res.status(400).json({ error: "type não permitido" });
+  }
+
+  return res.status(200).json({
+    message: "relatório gerado",
+    output: `stride-ok-${tipo}`,
   });
 });
